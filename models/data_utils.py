@@ -239,6 +239,7 @@ def restore_quandrangle(score_map, geo_map, threshold=0.5, fm_scale=4):
     tl = np.concatenate([left_x, top_y], axis=1)
     tr = np.concatenate([right_x, top_y], axis=1)
     br = np.concatenate([right_x, bot_y], axis=1)
+    bl = np.concatenate([left_x, bot_y], axis=1)
 
     center_x = np.mean([left_x, right_x], axis=0)
     center_y = np.mean([top_y, bot_y], axis=0)

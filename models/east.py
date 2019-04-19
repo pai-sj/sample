@@ -158,9 +158,11 @@ class EAST:
                                                  activation=tf.nn.sigmoid)(self._branch_map)
                     angle_map = (angle_map - 0.5) * np.pi / 2
 
-                self._y_pred_cls = tf.identity(score_map, name='score_prediction')
+                self._y_pred_cls = tf.identity(score_map, name='score')
                 self._y_pred_geo = tf.concat([loc_map, angle_map], axis=-1,
-                                             name='geometry_prediction')
+                                             name='geometry')
+        tf.get_collection('output', self._y_pred_cls)
+        tf.get_collection('output', self._y_pred_geo)
 
         self._built.append(self._to_build.pop(0))
         return self

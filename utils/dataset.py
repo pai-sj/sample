@@ -2,7 +2,8 @@ import cv2
 import pandas as pd
 import os
 import numpy as np
-
+import zipfile
+from urllib.request import urlretrieve
 
 dirnames = []
 for dirname in os.getcwd().split('/'):
@@ -10,7 +11,7 @@ for dirname in os.getcwd().split('/'):
     if dirname == 'nia-project':
         break
 DATA_DIR = "/".join(dirnames+['data'])
-
+ICDAR_URL ='https://s3.ap-northeast-2.amazonaws.com/pai-datasets/nia-dataset/icdar2015.zip'
 
 class OCRDataset:
     def __init__(self, dataset='icdar2015', data_type='train'):
@@ -67,5 +68,14 @@ class OCRDataset:
 def load_dataset(dataset, data_type):
     data_path = os.path.join(DATA_DIR,
                              '{}/{}/data.csv'.format(dataset, data_type))
+    if not os.path.exists(data_path):
+        download_dataset(dataset)
     df = pd.read_csv(data_path, sep='\t')
     return df
+
+
+def download_dataset(dataset):
+    path = 'icdar2015.zip'
+    urlretrieve(ICDAR_URL, path)
+    with zipfile.ZipFile(path,'r') as f:
+        f.extractall(os.path.join(DATA_DIR, dataset))
