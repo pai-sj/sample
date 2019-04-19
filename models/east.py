@@ -68,7 +68,6 @@ class EAST:
             tf.add_to_collection('inputs', self._lr)
 
 
-
     def _attach_stem_network(self):
         if 'stem' in self._built:
             print("stem network is already built")
@@ -168,6 +167,7 @@ class EAST:
         return self
 
     def _attach_loss_network(self,
+                             loss_type='bcse',
                              iou_smooth=1e-5,
                              alpha_theta=10,
                              alpha_geo=1):
@@ -181,17 +181,28 @@ class EAST:
         with self.graph.as_default():
             with tf.variable_scope("losses"):
                 with tf.variable_scope('score'):
-                    with tf.variable_scope('balance_factor'):
-                        num_pos = tf.count_nonzero(self._y_true_cls, axis=[1, 2, 3], dtype=tf.float32)
-                        num_tot = tf.reduce_prod(tf.shape(self._y_true_cls)[1:])
-                        beta = num_pos / tf.cast(num_tot, tf.float32)
-                        beta = tf.reshape(beta, shape=(-1, 1, 1, 1))
+                    if loss_type == "bcse":
+                        with tf.variable_scope('balance_factor'):
+                            num_pos = tf.count_nonzero(self._y_true_cls,
+                                                       axis=[1, 2, 3],
+                                                       dtype=tf.float32)
+                            num_tot = tf.reduce_prod(tf.shape(self._y_true_cls)[1:])
+                            beta = 1 - num_pos / tf.cast(num_tot, tf.float32)
+                            beta = tf.reshape(beta, shape=(-1, 1, 1, 1))
 
-                    with tf.variable_scope('balanced_cross_entropy'):
-                        bcse = -(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
-                                 (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
+                        with tf.variable_scope('balanced_cross_entropy'):
+                            bcse = -(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
+                                     (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
+                        score_loss = tf.reduce_mean(bcse, name='score_loss')
 
-                score_loss = tf.reduce_mean(bcse, name='score_loss')
+                    elif loss_type == "dice":
+                        with tf.variable_scope('dice_coefficient'):
+                            intersection = tf.reduce_sum(self._y_true_cls * self._y_pred_cls)
+                            union = tf.reduce_sum(self._y_true_cls) + tf.reduce_sum(self._y_pred_cls) + epsilon
+                            dice = 1 - 2 * intersection / union
+                        score_loss = tf.identity(dice, name='score_loss')
+                    else:
+                        raise ValueError("loss_type should be one, 'dice', 'bcse'")
 
                 with tf.variable_scope('geometry'):
                     geo_mask = tf.identity(self._y_true_cls, name='geo_mask')
