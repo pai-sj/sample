@@ -30,8 +30,8 @@ class DataGenerator(keras.utils.Sequence):
         score_maps = []
         geo_maps = []
         for idx, (image, polys) in enumerate(zip(*batch_dataset)):
-            image = preprocess_input(image.astype(np.float), mode='tf')
-
+            image = image[:, :, ::-1]
+            image = preprocess_input(image.astype(np.float))
             image, polys = normalize_shape(image, polys, self.image_shape)
             score_map, geo_map = generate_output(image, polys,
                                                  self.fm_scale)
