@@ -150,7 +150,7 @@ class EAST:
                                              name='score')(self._branch_map)
                 loc_map = tf.layers.Conv2D(4, (1, 1),
                                            activation=tf.nn.sigmoid)(self._branch_map)
-                loc_map = tf.identity(text_scale * loc_map, name='score')
+                loc_map = tf.identity(text_scale * loc_map, name='location')
 
                 with tf.variable_scope('angle'):
                     # angle should be in [-45, 45]
@@ -161,8 +161,8 @@ class EAST:
                 self._y_pred_cls = tf.identity(score_map, name='score')
                 self._y_pred_geo = tf.concat([loc_map, angle_map], axis=-1,
                                              name='geometry')
-        tf.get_collection('output', self._y_pred_cls)
-        tf.get_collection('output', self._y_pred_geo)
+            self.graph.get_collection('outputs', self._y_pred_cls)
+            self.graph.get_collection('outputs', self._y_pred_geo)
 
         self._built.append(self._to_build.pop(0))
         return self
