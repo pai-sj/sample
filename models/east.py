@@ -191,7 +191,8 @@ class EAST:
                             beta = tf.reshape(beta, shape=(-1, 1, 1, 1))
 
                         with tf.variable_scope('balanced_cross_entropy'):
-                            bcse = -(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
+                            # 100.0 is scale factor -> original bcse is too small compared to geo loss
+                            bcse = -100.*(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
                                      (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
                         score_loss = tf.reduce_mean(bcse, name='score_loss')
 
