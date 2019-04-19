@@ -161,8 +161,8 @@ class EAST:
                 self._y_pred_cls = score_map
                 self._y_pred_geo = tf.concat([loc_map, angle_map], axis=-1,
                                              name='geometry')
-            self.graph.get_collection('outputs', self._y_pred_cls)
-            self.graph.get_collection('outputs', self._y_pred_geo)
+            self.graph.add_to_collection('outputs', self._y_pred_cls)
+            self.graph.add_to_collection('outputs', self._y_pred_geo)
 
         self._built.append(self._to_build.pop(0))
         return self
