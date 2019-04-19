@@ -135,7 +135,7 @@ class EAST:
         self._built.append(self._to_build.pop(0))
         return self
 
-    def _attach_output_network(self, text_scale=512, activation=True):
+    def _attach_output_network(self, text_scale=512, sigmoid=True):
         if 'output' in self._built:
             print("output network is already built")
             return self
@@ -147,7 +147,7 @@ class EAST:
                 score_map = tf.layers.Conv2D(1, (1, 1),
                                              activation=tf.nn.sigmoid,
                                              name='score')(self._branch_map)
-                if activation:
+                if sigmoid:
                     loc_map = tf.layers.Conv2D(4, (1, 1),
                                                activation=tf.nn.sigmoid)(self._branch_map)
                 else:
