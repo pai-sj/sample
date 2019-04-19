@@ -223,8 +223,9 @@ def generate_output(image, polys, fm_scale=4):
 def restore_quandrangle(score_map, geo_map, threshold=0.5, fm_scale=4):
     h, w = geo_map.shape[:2]
     coords = np.mgrid[0:fm_scale * h:fm_scale,
-                      0:fm_scale * w:fm_scale].transpose(1, 2, 0)  # (h, w, 2)
+             0:fm_scale * w:fm_scale].transpose(1, 2, 0)  # (h, w, 2)
 
+    exist_score_map = score_map[np.where(score_map >= threshold)]
     exist_coords = coords[np.where(score_map >= threshold)]
     exist_geo_map = geo_map[np.where(score_map >= threshold)]
 
@@ -276,4 +277,4 @@ def restore_quandrangle(score_map, geo_map, threshold=0.5, fm_scale=4):
                               rotated_br,
                               rotated_bl], axis=1)
 
-    return rotated_polys
+    return rotated_polys, exist_score_map
