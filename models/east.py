@@ -151,7 +151,8 @@ class EAST:
                     loc_map = tf.layers.Conv2D(4, (1, 1),
                                                activation=tf.nn.sigmoid)(self._branch_map)
                 else:
-                    loc_map = tf.layers.Conv2D(4, (1, 1))(self._branch_map)
+                    loc_map = tf.layers.Conv2D(4, (1, 1),
+                                               activation=tf.nn.relu)(self._branch_map)
                 loc_map = tf.identity(text_scale * loc_map, name='location')
 
                 with tf.variable_scope('angle'):
