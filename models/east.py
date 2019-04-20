@@ -1,4 +1,5 @@
 from keras.applications.vgg16 import VGG16
+from keras.applications.resnet50 import ResNet50
 import tensorflow as tf
 import numpy as np
 import keras.backend as K
@@ -16,6 +17,7 @@ class EAST:
     5. _attach_optimizer()
 
     """
+
     def __init__(self):
         K.clear_session()
         self._session = K.get_session()
@@ -46,15 +48,24 @@ class EAST:
         with self.graph.as_default():
             global_vars = tf.global_variables()
 
-            is_not_initialized = self._session.run([tf.is_variable_initialized(var) for var in global_vars])
-            not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
+            is_not_initialized = self._session.run(
+                [tf.is_variable_initialized(var) for var in global_vars])
+            not_initialized_vars = [
+                v for (
+                    v,
+                    f) in zip(
+                    global_vars,
+                    is_not_initialized) if not f]
 
             if len(not_initialized_vars):
-                self._session.run(tf.variables_initializer(not_initialized_vars))
+                self._session.run(
+                    tf.variables_initializer(not_initialized_vars))
 
     def _initialize_placeholders(self):
         with self.graph.as_default():
-            self._x = None # After
+            self._x = None  # setup After building stem network
+            self._is_train = tf.placeholder_with_default(False, (), name='is_train')
+
             self._y_true_cls = tf.placeholder(tf.float32,
                                               shape=(None, None, None, 1),
                                               name='y_true_cls')
@@ -67,26 +78,42 @@ class EAST:
             tf.add_to_collection('inputs', self._y_true_geo)
             tf.add_to_collection('inputs', self._lr)
 
-
-    def _attach_stem_network(self):
+    def _attach_stem_network(self, base_model='vgg'):
         if 'stem' in self._built:
             print("stem network is already built")
             return self
-
         with tf.variable_scope('stem'):
-            vgg16 = VGG16(include_top=False)
+            if base_model == "vgg":
+                vgg16 = VGG16(include_top=False)
+                with self.graph.as_default():
+                    self._x = vgg16.input
 
-        with self.graph.as_default():
-            self._x = vgg16.input
+                    self.feature_maps = []
+                    for i in range(5, 1, -1):
+                        feature_map = vgg16.get_layer('block{}_pool'.format(i))
+                        feature_tensor = tf.identity(feature_map.output,
+                                                     "f{}".format(6 - i))
+                        self.feature_maps.append(feature_tensor)
+            elif base_model == "resnet":
+                resnet = ResNet50(include_top=False)
+                with self.graph.as_default():
+                    self._x = resnet.input
+                    self._is_train = self.graph.get_tensor_by_name('keras_learning_phase:0')
 
-            self.feature_maps = []
-            for i in range(5, 1, -1):
-                feature_map = vgg16.get_layer('block{}_pool'.format(i))
-                feature_tensor = tf.identity(feature_map.output,
-                                             "f{}".format(6 - i))
-                self.feature_maps.append(feature_tensor)
+                    self.feature_maps = []
+                    for i, layer_idx in zip(range(5, 1, -1),
+                                            [49, 40, 22, 10]):
+                        feature_map = resnet.get_layer(
+                            'activation_{}'.format(layer_idx))
+                        feature_tensor = tf.identity(feature_map.output,
+                                                     "f{}".format(6 - i))
+                        self.feature_maps.append(feature_tensor)
+            else:
+                raise ValueError("stem network should be one of them, 'vgg' or 'resnet'")
 
-        tf.add_to_collection('inputs', self._x)
+        self.graph.add_to_collection('inputs', self._x)
+        self.graph.add_to_collection('inputs', self._is_train)
+
         self._built.append(self._to_build.pop(0))
         return self
 
@@ -95,41 +122,44 @@ class EAST:
             print("branch network is already built")
             return self
         elif not 'branch' == self._to_build[0]:
-            raise IndexError("you should build {} network".format(self._to_build[0]))
+            raise IndexError(
+                "you should build {} network".format(
+                    self._to_build[0]))
 
         def unpool(tensor):
             with tf.variable_scope('unpool'):
                 shape = tf.shape(tensor)
-                return tf.image.resize_bilinear(tensor,
-                                                size=[shape[1] * 2, shape[2] * 2])
+                return tf.image.resize_bilinear(
+                    tensor, size=[shape[1] * 2, shape[2] * 2])
 
         with self.graph.as_default():
-            f = None
-            h = None
-            g = None
+            conv2d = tf.layers.Conv2D
+            batch_norm = tf.layers.BatchNormalization
             with tf.variable_scope('branch'):
                 for i, f in enumerate(self.feature_maps):
                     num_layer = num_layers[i]
-                    with tf.variable_scope('block{}'.format(i+1)):
+                    with tf.variable_scope('block{}'.format(i + 1)):
                         if i == 0:
                             h = f
                         else:
                             concat = tf.concat([g, f], axis=-1)
-                            squeeze = tf.layers.Conv2D(num_layer, (1, 1),
-                                                       padding='same',
-                                                       activation=tf.nn.relu,
-                                                       name='conv_1x1')(concat)
-                            h = tf.layers.Conv2D(num_layer, (3, 3),
-                                                 padding='same',
-                                                 activation=tf.nn.relu,
-                                                 name='conv_3x3')(squeeze)
+                            s = conv2d(num_layer, (1, 1),
+                                       padding='same',
+                                       activation=tf.nn.relu,
+                                       name='conv_1x1')(concat)
+                            s = batch_norm()(s, training=self._is_train)
+                            h = conv2d(num_layer, (3, 3),
+                                       padding='same',
+                                       activation=tf.nn.relu,
+                                       name='conv_3x3')(s)
+                            h = batch_norm()(h, training=self._is_train)
                         if i <= 2:
                             g = unpool(h)
                         else:
-                            g = tf.layers.Conv2D(num_layer, (3, 3),
-                                                 padding='same',
-                                                 activation=tf.nn.relu)(h)
-
+                            g = conv2d(num_layer, (3, 3),
+                                       padding='same',
+                                       activation=tf.nn.relu)(h)
+                            g = batch_norm()(g, training=self._is_train)
             self._branch_map = tf.identity(g, name='branch_map')
 
         self._built.append(self._to_build.pop(0))
@@ -140,30 +170,33 @@ class EAST:
             print("output network is already built")
             return self
         elif not 'output' == self._to_build[0]:
-            raise IndexError("you should build {} network".format(self._to_build[0]))
+            raise IndexError(
+                "you should build {} network".format(
+                    self._to_build[0]))
 
         with self.graph.as_default():
+            conv2d = tf.layers.Conv2D
             with tf.variable_scope('output'):
-                score_map = tf.layers.Conv2D(1, (1, 1),
-                                             activation=tf.nn.sigmoid,
-                                             name='score')(self._branch_map)
+                score_map = conv2d(1, (1, 1),
+                                   activation=tf.nn.sigmoid,
+                                   name='score')(self._branch_map)
                 if sigmoid:
-                    loc_map = tf.layers.Conv2D(4, (1, 1),
-                                               activation=tf.nn.sigmoid)(self._branch_map)
+                    loc_map = conv2d(4, (1, 1),
+                                     activation=tf.nn.sigmoid)(self._branch_map)
                 else:
-                    loc_map = tf.layers.Conv2D(4, (1, 1),
-                                               activation=tf.nn.relu)(self._branch_map)
+                    loc_map = conv2d(4, (1, 1),
+                                     activation=tf.nn.relu)(self._branch_map)
                 loc_map = tf.identity(text_scale * loc_map, name='location')
 
                 with tf.variable_scope('angle'):
                     # angle should be in [-45, 45]
-                    angle_map = tf.layers.Conv2D(1, (1, 1),
-                                                 activation=tf.nn.sigmoid)(self._branch_map)
+                    angle_map = conv2d(1, (1, 1),
+                                       activation=tf.nn.sigmoid)(self._branch_map)
                     angle_map = (angle_map - 0.5) * np.pi / 2
 
-                self._y_pred_cls = score_map
-                self._y_pred_geo = tf.concat([loc_map, angle_map], axis=-1,
-                                             name='geometry')
+            self._y_pred_cls = tf.identity(score_map, name='score')
+            self._y_pred_geo = tf.concat([loc_map, angle_map], axis=-1, name='geometry')
+
             self.graph.add_to_collection('outputs', self._y_pred_cls)
             self.graph.add_to_collection('outputs', self._y_pred_geo)
 
@@ -179,7 +212,9 @@ class EAST:
             print("loss network is already built")
             return self
         elif not 'loss' == self._to_build[0]:
-            raise IndexError("you should build {} network".format(self._to_build[0]))
+            raise IndexError(
+                "you should build {} network".format(
+                    self._to_build[0]))
 
         epsilon = 1e-7
         with self.graph.as_default():
@@ -190,42 +225,52 @@ class EAST:
                             num_pos = tf.count_nonzero(self._y_true_cls,
                                                        axis=[1, 2, 3],
                                                        dtype=tf.float32)
-                            num_tot = tf.reduce_prod(tf.shape(self._y_true_cls)[1:])
+                            num_tot = tf.reduce_prod(
+                                tf.shape(self._y_true_cls)[1:])
                             beta = 1 - num_pos / tf.cast(num_tot, tf.float32)
                             beta = tf.reshape(beta, shape=(-1, 1, 1, 1))
 
                         with tf.variable_scope('balanced_cross_entropy'):
-                            # 100.0 is scale factor -> original bcse is too small compared to geo loss
-                            bcse = -100.*(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
-                                     (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
+                            # 100.0 is scale factor -> original bcse is too
+                            # small compared to geo loss
+                            bcse = -100. * (beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) + (
+                                1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
                         score_loss = tf.reduce_mean(bcse, name='score_loss')
 
                     elif loss_type == "dice":
                         with tf.variable_scope('dice_coefficient'):
-                            intersection = tf.reduce_sum(self._y_true_cls * self._y_pred_cls)
-                            union = tf.reduce_sum(self._y_true_cls) + tf.reduce_sum(self._y_pred_cls) + epsilon
+                            intersection = tf.reduce_sum(
+                                self._y_true_cls * self._y_pred_cls)
+                            union = tf.reduce_sum(
+                                self._y_true_cls) + tf.reduce_sum(self._y_pred_cls) + epsilon
                             dice = 1 - 2 * intersection / union
                         score_loss = tf.identity(dice, name='score_loss')
                     else:
-                        raise ValueError("loss_type should be one, 'dice', 'bcse'")
+                        raise ValueError(
+                            "loss_type should be one, 'dice', 'bcse'")
 
                 with tf.variable_scope('geometry'):
                     geo_mask = tf.identity(self._y_true_cls, name='geo_mask')
-                    num_pos = tf.count_nonzero(self._y_true_cls, axis=[1, 2, 3], dtype=tf.float32, name='num_pos')
+                    num_pos = tf.count_nonzero(self._y_true_cls, axis=[1, 2, 3],
+                                               dtype=tf.float32, name='num_pos')
 
                     with tf.variable_scope('split_tensor'):
-                        top_true, right_true, bottom_true, left_true, theta_true = tf.split(self._y_true_geo, 5, axis=3)
-                        top_pred, right_pred, bottom_pred, left_pred, theta_pred = tf.split(self._y_pred_geo, 5, axis=3)
+                        top_true, right_true, bottom_true, left_true, theta_true = tf.split(
+                            self._y_true_geo, 5, axis=3)
+                        top_pred, right_pred, bottom_pred, left_pred, theta_pred = tf.split(
+                            self._y_pred_geo, 5, axis=3)
 
                     with tf.variable_scope('aabb'):
                         with tf.variable_scope("area"):
-                            area_true = (top_true + bottom_true) * (right_true + left_true)
-                            area_pred = (top_pred + bottom_pred) * (right_pred + left_pred)
+                            area_true = (top_true + bottom_true) * \
+                                (right_true + left_true)
+                            area_pred = (top_pred + bottom_pred) * \
+                                (right_pred + left_pred)
 
                             w_intersect = (tf.minimum(right_true, right_pred)
                                            + tf.minimum(left_true, left_pred))
-                            h_intersect = (tf.minimum(top_true, top_pred)
-                                           + tf.minimum(bottom_true, bottom_pred))
+                            h_intersect = (tf.minimum(top_true, top_pred) +
+                                           tf.minimum(bottom_true, bottom_pred))
                             area_intersect = w_intersect * h_intersect
                             area_union = area_true + area_pred - area_intersect
 
@@ -235,7 +280,8 @@ class EAST:
                             # geo_mask에서 1인 부분들만 학습에 들어감
                             # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
                             # 배치 별 로스의 합 / 배치 당 데이터의 수
-                            area_loss = tf.reduce_sum(area_loss * geo_mask, axis=[1, 2, 3]) / num_pos
+                            area_loss = tf.reduce_sum(
+                                area_loss * geo_mask, axis=[1, 2, 3]) / num_pos
 
                     area_loss = tf.reduce_mean(area_loss, name='area_loss')
 
@@ -244,7 +290,8 @@ class EAST:
                         # geo_mask에서 1인 부분들만 학습에 들어감
                         # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
                         # 배치 별 로스의 합 / 배치 당 데이터의 수
-                        angle_loss = tf.reduce_sum(angle_loss * geo_mask, axis=[1, 2, 3]) / num_pos
+                        angle_loss = tf.reduce_sum(
+                            angle_loss * geo_mask, axis=[1, 2, 3]) / num_pos
                     angle_loss = tf.reduce_mean(angle_loss, name='angle_loss')
 
                     with tf.variable_scope('aabb_theta'):
@@ -275,18 +322,20 @@ class EAST:
             print("optimizer network is already built")
             return self
         elif not 'optimizer' == self._to_build[0]:
-            raise IndexError("you should build {} network".format(self._to_build[0]))
+            raise IndexError(
+                "you should build {} network".format(
+                    self._to_build[0]))
 
         with self.graph.as_default():
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            without_stem_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                                       scope='^((?!stem).)*$')
+            without_stem_variables = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, scope='^((?!stem).)*$')
             with tf.control_dependencies(update_ops):
                 self._headtune_op = (tf.train
-                               .AdamOptimizer(self._lr)
-                               .minimize(self._loss,
-                                         var_list=without_stem_variables,
-                                         name='headtune_op'))
+                                     .AdamOptimizer(self._lr)
+                                     .minimize(self._loss,
+                                               var_list=without_stem_variables,
+                                               name='headtune_op'))
                 self._finetune_op = (tf.train
                                      .AdamOptimizer(self._lr)
                                      .minimize(self._loss,

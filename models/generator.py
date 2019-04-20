@@ -1,6 +1,5 @@
 import keras
 import numpy as np
-from keras.applications.vgg16 import preprocess_input
 from .data_utils import (normalize_shape, generate_output)
 
 
@@ -8,11 +7,13 @@ class DataGenerator(keras.utils.Sequence):
     "Generates Text Recognition Dataset for Keras"
 
     def __init__(self, dataset, batch_size=3,
+                 image_type='vgg',
                  image_shape=(736, 1280, 3),
                  fm_scale=4, shuffle=True):
         "Initialization"
         self.dataset = dataset
         self.batch_size = batch_size
+        self.image_type = image_type
         self.image_shape = list(image_shape)
         self.fm_scale = fm_scale
         self.shuffle = shuffle
@@ -30,8 +31,11 @@ class DataGenerator(keras.utils.Sequence):
         score_maps = []
         geo_maps = []
         for idx, (image, polys) in enumerate(zip(*batch_dataset)):
-            image = image[:, :, ::-1]
-            image = preprocess_input(image.astype(np.float))
+            if self.image_type == 'vgg':
+                image = image - np.array((123.68, 116.779, 103.939))
+            elif self.image_type == 'resnet':
+                # RESNET doesn't need to subtract
+                image = image
             image, polys = normalize_shape(image, polys, self.image_shape)
             score_map, geo_map = generate_output(image, polys,
                                                  self.fm_scale)
