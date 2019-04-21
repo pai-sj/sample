@@ -13,6 +13,7 @@ class EAST:
     1. _attach_stem_network()
     2. _attach_branch_network()
     3. _attach_output_network()
+    4. _attach_decode_network()
     4. _attach_loss_network()
     5. _attach_optimizer()
 
@@ -25,6 +26,7 @@ class EAST:
         self._to_build = ['stem',
                           'branch',
                           'output',
+                          'decode',
                           'loss',
                           'optimizer']
         self._built = []
@@ -41,6 +43,7 @@ class EAST:
         return (self._attach_stem_network()
                 ._attach_branch_network()
                 ._attach_output_network()
+                ._attach_decode_network()
                 ._attach_loss_network()
                 ._attach_optimizer())
 
@@ -203,6 +206,106 @@ class EAST:
         self._built.append(self._to_build.pop(0))
         return self
 
+    def _attach_decode_network(self, fm_scale=4):
+        if 'decode' in self._built:
+            print("decode network is already built")
+            return self
+        elif not 'decode' == self._to_build[0]:
+            raise IndexError(
+                "you should build {} network".format(
+                    self._to_build[0]))
+
+        with self.graph.as_default():
+            threshold = tf.placeholder_with_default(0.5, (), name='threshold')
+
+            def decode_result(result_map):
+                score_map, geo_map = tf.split(result_map, [1, 5], axis=2)
+                score_map = score_map[:, :, 0]
+                with tf.variable_scope('decoder'):
+                    h, w, _ = tf.split(tf.shape(geo_map), 3)
+                    h = tf.squeeze(h)
+                    w = tf.squeeze(w)
+
+                    xs, ys = tf.meshgrid(tf.range(0, w * fm_scale, fm_scale),
+                                         tf.range(0, h * fm_scale, fm_scale), )
+                    coords = tf.stack([ys, xs], axis=-1)
+                    coords = tf.cast(coords, tf.float32)
+
+                    indices = tf.where(score_map >= threshold)
+                    exist_score_map = tf.gather_nd(score_map, indices)
+                    exist_coords = tf.gather_nd(coords, indices)
+                    exist_geo_map = tf.gather_nd(geo_map, indices)
+
+                    p_y, p_x = tf.split(exist_coords, 2, axis=1)
+                    top, right, bottom, left, theta = tf.split(exist_geo_map, 5, axis=1)
+
+                    top_y = p_y - top
+                    bot_y = p_y + bottom
+                    left_x = p_x - left
+                    right_x = p_x + right
+
+                    tl = tf.concat([left_x, top_y], axis=1)
+                    tr = tf.concat([right_x, top_y], axis=1)
+                    br = tf.concat([right_x, bot_y], axis=1)
+                    bl = tf.concat([left_x, bot_y], axis=1)
+
+                    center_x = tf.reduce_mean([left_x, right_x], axis=0)
+                    center_y = tf.reduce_mean([top_y, bot_y], axis=0)
+                    center = tf.concat([center_x, center_y], axis=1)
+
+                    shift_tl = tl - center
+                    shift_tr = tr - center
+                    shift_bl = bl - center
+                    shift_br = br - center
+
+                    theta = theta[:, 0]
+                    x_rot_matrix = tf.stack([tf.cos(theta), -tf.sin(theta)], axis=1)
+                    y_rot_matrix = tf.stack([tf.sin(theta), tf.cos(theta)], axis=1)
+
+                    rotated_tl_x = (tf.reduce_sum(x_rot_matrix * shift_tl, axis=1)
+                                    + center[:, 0])
+                    rotated_tl_y = (tf.reduce_sum(y_rot_matrix * shift_tl, axis=1)
+                                    + center[:, 1])
+
+                    rotated_tr_x = (tf.reduce_sum(x_rot_matrix * shift_tr, axis=1)
+                                    + center[:, 0])
+                    rotated_tr_y = (tf.reduce_sum(y_rot_matrix * shift_tr, axis=1)
+                                    + center[:, 1])
+
+                    rotated_br_x = (tf.reduce_sum(x_rot_matrix * shift_br, axis=1)
+                                    + center[:, 0])
+                    rotated_br_y = (tf.reduce_sum(y_rot_matrix * shift_br, axis=1)
+                                    + center[:, 1])
+
+                    rotated_bl_x = (tf.reduce_sum(x_rot_matrix * shift_bl, axis=1)
+                                    + center[:, 0])
+                    rotated_bl_y = (tf.reduce_sum(y_rot_matrix * shift_bl, axis=1)
+                                    + center[:, 1])
+
+                    rotated_tl = tf.stack([rotated_tl_x, rotated_tl_y], axis=-1)
+                    rotated_tr = tf.stack([rotated_tr_x, rotated_tr_y], axis=-1)
+                    rotated_bl = tf.stack([rotated_bl_x, rotated_bl_y], axis=-1)
+                    rotated_br = tf.stack([rotated_br_x, rotated_br_y], axis=-1)
+
+                    rotated_polys = tf.stack([rotated_tl, rotated_tr,
+                                              rotated_br, rotated_bl], axis=1)
+
+                rotated_polys = tf.identity(rotated_polys, name="selected_polys")
+                exist_score_map = tf.identity(exist_score_map, name='selected_scores')
+
+                rotated_polys = tf.reshape(rotated_polys, (-1, 8))
+                exist_score_map = tf.expand_dims(exist_score_map, axis=1)
+                result_map = tf.concat([rotated_polys, exist_score_map], axis=-1)
+
+                return result_map
+
+            results = tf.concat([self._y_pred_cls, self._y_pred_geo], axis=-1)
+            decode = tf.map_fn(decode_result, results, name='decode')
+
+            self.graph.add_to_collection('decode', decode)
+        self._built.append(self._to_build.pop(0))
+        return self
+
     def _attach_loss_network(self,
                              loss_type='bcse',
                              iou_smooth=1e-5,
@@ -317,7 +420,7 @@ class EAST:
         self._built.append(self._to_build.pop(0))
         return self
 
-    def _attach_optimizer(self):
+    def _attach_optimizer(self, weight_decay=1e-5):
         if 'optimizer' in self._built:
             print("optimizer network is already built")
             return self
@@ -330,16 +433,26 @@ class EAST:
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             without_stem_variables = tf.get_collection(
                 tf.GraphKeys.TRAINABLE_VARIABLES, scope='^((?!stem).)*$')
+
+            with tf.variable_scope("l2_loss"):
+                weights = [var
+                           for var in tf.trainable_variables()
+                           if not "bias" in var.name]
+                l2_losses = tf.add_n([tf.nn.l2_loss(var) for var in weights], name='l2_losses')
+
             with tf.control_dependencies(update_ops):
+                loss = self._loss + weight_decay * l2_losses
+
                 self._headtune_op = (tf.train
                                      .AdamOptimizer(self._lr)
-                                     .minimize(self._loss,
+                                     .minimize(loss,
                                                var_list=without_stem_variables,
                                                name='headtune_op'))
                 self._finetune_op = (tf.train
                                      .AdamOptimizer(self._lr)
-                                     .minimize(self._loss,
+                                     .minimize(loss,
                                                name='finetune_op'))
 
         self._built.append(self._to_build.pop(0))
         return self
+
