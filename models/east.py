@@ -336,8 +336,9 @@ class EAST:
                         with tf.variable_scope('balanced_cross_entropy'):
                             # 100.0 is scale factor -> original bcse is too
                             # small compared to geo loss
-                            bcse = -100. * (beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) + (
-                                1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
+                            bcse = -(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
+                                     (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
+                            bcse = tf.reduce_sum(bcse, axis=[1, 2, 3])
                         score_loss = tf.reduce_mean(bcse, name='score_loss')
 
                     elif loss_type == "dice":
@@ -384,7 +385,7 @@ class EAST:
                             # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
                             # 배치 별 로스의 합 / 배치 당 데이터의 수
                             area_loss = tf.reduce_sum(
-                                area_loss * geo_mask, axis=[1, 2, 3]) / num_pos
+                                area_loss * geo_mask, axis=[1, 2, 3])
 
                     area_loss = tf.reduce_mean(area_loss, name='area_loss')
 
@@ -394,7 +395,7 @@ class EAST:
                         # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
                         # 배치 별 로스의 합 / 배치 당 데이터의 수
                         angle_loss = tf.reduce_sum(
-                            angle_loss * geo_mask, axis=[1, 2, 3]) / num_pos
+                            angle_loss * geo_mask, axis=[1, 2, 3])
                     angle_loss = tf.reduce_mean(angle_loss, name='angle_loss')
 
                     with tf.variable_scope('aabb_theta'):
@@ -430,28 +431,29 @@ class EAST:
                     self._to_build[0]))
 
         with self.graph.as_default():
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            without_stem_variables = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, scope='^((?!stem).)*$')
+            with tf.variable_scope("optimizer"):
+                update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                without_stem_variables = tf.get_collection(
+                    tf.GraphKeys.TRAINABLE_VARIABLES, scope='^((?!stem).)*$')
 
-            with tf.variable_scope("l2_loss"):
-                weights = [var
-                           for var in tf.trainable_variables()
-                           if not "bias" in var.name]
-                l2_losses = tf.add_n([tf.nn.l2_loss(var) for var in weights], name='l2_losses')
+                with tf.variable_scope("l2_loss"):
+                    weights = [var
+                               for var in tf.trainable_variables()
+                               if not "bias" in var.name]
+                    l2_losses = tf.add_n([tf.nn.l2_loss(var) for var in weights], name='l2_losses')
 
-            with tf.control_dependencies(update_ops):
-                loss = self._loss + weight_decay * l2_losses
+                with tf.control_dependencies(update_ops):
+                    loss = self._loss + weight_decay * l2_losses
 
-                self._headtune_op = (tf.train
-                                     .AdamOptimizer(self._lr)
-                                     .minimize(loss,
-                                               var_list=without_stem_variables,
-                                               name='headtune_op'))
-                self._finetune_op = (tf.train
-                                     .AdamOptimizer(self._lr)
-                                     .minimize(loss,
-                                               name='finetune_op'))
+                    self._headtune_op = (tf.train
+                                         .AdamOptimizer(self._lr)
+                                         .minimize(loss,
+                                                   var_list=without_stem_variables,
+                                                   name='headtune_op'))
+                    self._finetune_op = (tf.train
+                                         .AdamOptimizer(self._lr)
+                                         .minimize(loss,
+                                                   name='finetune_op'))
 
         self._built.append(self._to_build.pop(0))
         return self
