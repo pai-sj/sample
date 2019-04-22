@@ -135,6 +135,11 @@ class EAST:
                             'activation_{}'.format(layer_idx))
                         feature_tensor = tf.identity(feature_map.output,
                                                      "f{}".format(6 - i))
+                        # Version에 따라서
+                        # keras._version__ <= 2.2 인경우,
+                        # stem/f4:0에
+                        # tf.keras.backend.spatial_2d_padding
+                        # 으로 padding을 붙여주어야 함
                         self.feature_maps.append(feature_tensor)
             else:
                 raise ValueError("stem network should be one of them, 'vgg' or 'resnet'")
