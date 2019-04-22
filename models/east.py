@@ -20,9 +20,27 @@ class EAST:
     """
 
     def __init__(self):
+        """
+
+        east = EAST()
+
+        Building Order
+        1. east._attach_stem_network()
+        2. east._attach_branch_network()
+        3. east._attach_output_network()
+        4. east._attach_decode_network()
+        4. east._attach_loss_network()
+        5. east._attach_optimizer()
+
+        Intializing Variable
+        east.initialize_variable()
+
+        """
         K.clear_session()
-        self._session = K.get_session()
-        self.graph = self._session.graph
+        self.session = K.get_session() # Keras Pretrained Model을 쓰기 위함
+        self.graph = self.session.graph
+
+        # Layer을 쌓는 순서를 결정해줌
         self._to_build = ['stem',
                           'branch',
                           'output',
@@ -51,7 +69,7 @@ class EAST:
         with self.graph.as_default():
             global_vars = tf.global_variables()
 
-            is_not_initialized = self._session.run(
+            is_not_initialized = self.session.run(
                 [tf.is_variable_initialized(var) for var in global_vars])
             not_initialized_vars = [
                 v for (
@@ -61,7 +79,7 @@ class EAST:
                     is_not_initialized) if not f]
 
             if len(not_initialized_vars):
-                self._session.run(
+                self.session.run(
                     tf.variables_initializer(not_initialized_vars))
 
     def _initialize_placeholders(self):
@@ -99,9 +117,16 @@ class EAST:
                         self.feature_maps.append(feature_tensor)
             elif base_model == "resnet":
                 resnet = ResNet50(include_top=False)
+                """
+                RESNET에 있는 Batch Normalization의 Mean & Average은 ImageNet의 데이터셋에
+                학습된 Mean & Average. 이를 Training 단계와 Test 단계로 나누어서 학습하게 되면,
+                기존 데이터셋과 충돌나게 됨.
+                
+                즉, 성능이 굉장히 드랍되는 효과가 발생함.  
+                reference : https://github.com/keras-team/keras/issues/7177
+                """
                 with self.graph.as_default():
                     self._x = resnet.input
-                    self._is_train = self.graph.get_tensor_by_name('keras_learning_phase:0')
 
                     self.feature_maps = []
                     for i, layer_idx in zip(range(5, 1, -1),
@@ -168,7 +193,7 @@ class EAST:
         self._built.append(self._to_build.pop(0))
         return self
 
-    def _attach_output_network(self, text_scale=512, sigmoid=True):
+    def _attach_output_network(self, text_scale=512):
         if 'output' in self._built:
             print("output network is already built")
             return self
@@ -183,12 +208,9 @@ class EAST:
                 score_map = conv2d(1, (1, 1),
                                    activation=tf.nn.sigmoid,
                                    name='score')(self._branch_map)
-                if sigmoid:
-                    loc_map = conv2d(4, (1, 1),
-                                     activation=tf.nn.sigmoid)(self._branch_map)
-                else:
-                    loc_map = conv2d(4, (1, 1),
-                                     activation=tf.nn.relu)(self._branch_map)
+
+                loc_map = conv2d(4, (1, 1),
+                                 activation=tf.nn.sigmoid)(self._branch_map)
                 loc_map = tf.identity(text_scale * loc_map, name='location')
 
                 with tf.variable_scope('angle'):
@@ -334,8 +356,6 @@ class EAST:
                             beta = tf.reshape(beta, shape=(-1, 1, 1, 1))
 
                         with tf.variable_scope('balanced_cross_entropy'):
-                            # 100.0 is scale factor -> original bcse is too
-                            # small compared to geo loss
                             bcse = -(beta * self._y_true_cls * tf.log(epsilon + self._y_pred_cls) +
                                      (1. - beta) * (1. - self._y_true_cls) * tf.log(epsilon + 1. - self._y_pred_cls))
                             bcse = tf.reduce_sum(bcse, axis=[1, 2, 3])
@@ -355,8 +375,6 @@ class EAST:
 
                 with tf.variable_scope('geometry'):
                     geo_mask = tf.identity(self._y_true_cls, name='geo_mask')
-                    num_pos = tf.count_nonzero(self._y_true_cls, axis=[1, 2, 3],
-                                               dtype=tf.float32, name='num_pos')
 
                     with tf.variable_scope('split_tensor'):
                         top_true, right_true, bottom_true, left_true, theta_true = tf.split(
@@ -382,8 +400,6 @@ class EAST:
                             area_loss = -tf.log((area_intersect + iou_smooth)
                                                 / (area_union + iou_smooth))
                             # geo_mask에서 1인 부분들만 학습에 들어감
-                            # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
-                            # 배치 별 로스의 합 / 배치 당 데이터의 수
                             area_loss = tf.reduce_sum(
                                 area_loss * geo_mask, axis=[1, 2, 3])
 
@@ -392,8 +408,6 @@ class EAST:
                     with tf.variable_scope('theta'):
                         angle_loss = (1 - tf.cos(theta_pred - theta_true))
                         # geo_mask에서 1인 부분들만 학습에 들어감
-                        # 전체 평균이 아닌 geo_mask에서 1인 것들만 학습하므로, num_pos로 나누어주어야 함
-                        # 배치 별 로스의 합 / 배치 당 데이터의 수
                         angle_loss = tf.reduce_sum(
                             angle_loss * geo_mask, axis=[1, 2, 3])
                     angle_loss = tf.reduce_mean(angle_loss, name='angle_loss')
